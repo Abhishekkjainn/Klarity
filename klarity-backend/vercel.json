@@ -11,11 +11,5 @@
       "src": "/api/(.*)",
       "dest": "index.js"
     }
-  ],
-  "crons": [
-    {
-      "path": "/api/v1/scheduler/run-checks",
-      "schedule": "* * * * *"
-    }
   ]
 }
