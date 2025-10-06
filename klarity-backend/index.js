@@ -352,7 +352,7 @@ const runHealthChecks = async () => {
         if (dueMonitors.length === 0) { console.log('No monitors due for a check.'); return; }
         console.log(`Found ${dueMonitors.length} monitor(s) to check.`);
 
-        // --- UPGRADED: Process each monitor independently to prevent cascading failures ---
+        // --- UPGRADED: Process each monitor independent ly to prevent cascading failures ---
         for (const monitor of dueMonitors) {
             try {
                 const startTime = Date.now();
