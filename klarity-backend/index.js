@@ -1,4 +1,4 @@
-// index.js (Final Version)
+// index.js (Final Version with Resend)
 
 // =================================================================
 // 1. IMPORTS & SETUP
@@ -11,9 +11,10 @@ const cookieParser = require('cookie-parser');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
-const nodemailer = require('nodemailer'); // --- NEW ---
+const { Resend } = require('resend'); // --- UPDATED ---
 
 const app = express();
+const resend = new Resend(process.env.RESEND_API_KEY); // --- NEW ---
 
 // =================================================================
 // 2. DATABASE CONNECTION & SCHEMA
@@ -42,11 +43,11 @@ const ensureSchema = async () => {
       http_method VARCHAR(10) NOT NULL DEFAULT 'GET',
       base_url TEXT NOT NULL,
       endpoint TEXT NOT NULL,
-      notification_email TEXT, -- --- NEW --- For sending alerts
+      notification_email TEXT,
       check_interval_seconds INTEGER NOT NULL DEFAULT 300,
       is_active BOOLEAN NOT NULL DEFAULT true,
       current_status VARCHAR(50) NOT NULL DEFAULT 'pending',
-      consecutive_failures INTEGER NOT NULL DEFAULT 0, -- --- NEW --- For alerting logic
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW(),
       last_checked_at TIMESTAMPTZ NULL
@@ -62,7 +63,6 @@ const ensureSchema = async () => {
         was_successful BOOLEAN NOT NULL,
         error_message TEXT
     );
-    -- --- NEW --- Index for faster analytics queries
     CREATE INDEX IF NOT EXISTS health_checks_monitor_id_timestamp_idx ON health_checks (monitor_id, timestamp DESC);
   `;
   try {
@@ -79,16 +79,26 @@ const ensureSchema = async () => {
 // 3. UTILITIES (Email & Errors)
 // =================================================================
 
-// --- NEW: Email Utility ---
+// --- UPDATED: Email Utility using Resend ---
 const sendEmail = async (options) => {
-    const transporter = nodemailer.createTransport({
-        host: process.env.EMAIL_HOST, port: process.env.EMAIL_PORT,
-        auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASSWORD },
-    });
-    const mailOptions = { from: process.env.EMAIL_FROM, to: options.to, subject: options.subject, html: options.html };
-    await transporter.sendMail(mailOptions);
-    console.log(`Email sent to ${options.to} with subject "${options.subject}"`);
+    try {
+        const { data, error } = await resend.emails.send({
+            from: process.env.EMAIL_FROM,
+            to: options.to,
+            subject: options.subject,
+            html: options.html,
+        });
+
+        if (error) {
+            return console.error({ error });
+        }
+
+        console.log(`Email sent successfully to ${options.to}. ID: ${data.id}`);
+    } catch (error) {
+        console.error('Exception when sending email:', error);
+    }
 };
+
 
 class AppError extends Error {
   constructor(message, statusCode) {
@@ -104,7 +114,6 @@ class AppError extends Error {
 const runHealthChecks = async () => {
     console.log(`[${new Date().toISOString()}] Running health checks...`);
     try {
-        // Fetch monitors that are due, along with their owner's email for alerts
         const query = `
             SELECT m.*, u.email as owner_email FROM monitors m
             JOIN users u ON m.user_id = u.id
@@ -129,25 +138,21 @@ const runHealthChecks = async () => {
             }
             checkResult.responseTime = Date.now() - startTime;
 
-            // --- MODIFIED: Alerting Logic ---
             let newStatus = checkResult.wasSuccessful ? 'up' : 'down';
             let newConsecutiveFailures = checkResult.wasSuccessful ? 0 : monitor.consecutive_failures + 1;
 
-            // Send DOWNTIME alert on the 3rd consecutive failure
             if (newConsecutiveFailures === 3) {
                 const alertEmail = monitor.notification_email || monitor.owner_email;
                 const html = `<h1>Downtime Alert: ${monitor.name} is down!</h1><p>Your monitor "${monitor.name}" failed 3 consecutive checks.</p><p>URL: ${monitor.base_url}${monitor.endpoint}</p><p>Time: ${new Date().toUTCString()}</p>`;
                 await sendEmail({ to: alertEmail, subject: `🔴 Alert: ${monitor.name} is DOWN`, html });
             }
             
-            // Send RECOVERY alert when it comes back up after being down
             if (checkResult.wasSuccessful && monitor.consecutive_failures >= 3) {
                 const alertEmail = monitor.notification_email || monitor.owner_email;
                 const html = `<h1>Recovery Alert: ${monitor.name} is back up!</h1><p>Your monitor "${monitor.name}" has recovered and is now responding correctly.</p><p>URL: ${monitor.base_url}${monitor.endpoint}</p><p>Time: ${new Date().toUTCString()}</p>`;
                 await sendEmail({ to: alertEmail, subject: `🟢 Alert: ${monitor.name} has RECOVERED`, html });
             }
 
-            // Save results to the database
             await db.query('INSERT INTO health_checks (monitor_id, status_code, response_time_ms, was_successful, error_message) VALUES ($1, $2, $3, $4, $5)', [monitor.id, checkResult.statusCode, checkResult.responseTime, checkResult.wasSuccessful, checkResult.errorMessage]);
             await db.query('UPDATE monitors SET current_status = $1, last_checked_at = NOW(), consecutive_failures = $2 WHERE id = $3', [newStatus, newConsecutiveFailures, monitor.id]);
         }));
@@ -157,6 +162,7 @@ const runHealthChecks = async () => {
     }
 };
 
+// ... The rest of the file (Middleware, API Routes, Error Handling, Server Start) is exactly the same ...
 // =================================================================
 // 5. MIDDLEWARE
 // =================================================================
@@ -171,17 +177,14 @@ const protect = async (req, res, next) => {
     if (!currentUser) { return next(new AppError('The user for this token no longer exists.', 401)); } req.user = currentUser; next();
   } catch (error) { next(new AppError('Invalid token or session expired.', 401)); }
 };
-
 // =================================================================
 // 6. API ROUTES
 // =================================================================
-
 app.get('/api/v1/health', (req, res) => res.status(200).json({ status: 'ok', statusCode: 200, message: 'API is healthy and running.' }));
 app.get('/api/v1/scheduler/run-checks', async (req, res) => {
     if (req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) { return res.status(401).json({ status: 'error', message: 'Unauthorized' }); }
     await runHealthChecks(); res.status(200).json({ status: 'success', statusCode: 200, message: 'Health check scheduler triggered successfully.' });
 });
-
 // --- Authentication Routes ---
 const authRouter = express.Router();
 const signAndSendToken = (user, statusCode, res) => {
@@ -190,97 +193,31 @@ const signAndSendToken = (user, statusCode, res) => {
     res.cookie('jwt', token, cookieOptions); user.password_hash = undefined;
     res.status(statusCode).json({ status: 'success', statusCode, message: statusCode === 201 ? 'User registered successfully.' : 'User logged in successfully.', token, data: { user } });
 };
-authRouter.post('/register', async (req, res, next) => { /* ... (unchanged) ... */ try { const { email, password } = req.body; if (!email || !password || password.length < 8) { return next(new AppError('Please provide a valid email and a password of at least 8 characters.', 400)); } const userCheck = await db.query('SELECT * FROM users WHERE email = $1', [email]); if (userCheck.rows.length > 0) { return next(new AppError('A user with this email already exists.', 409));} const salt = await bcrypt.genSalt(10); const passwordHash = await bcrypt.hash(password, salt); const newUserQuery = 'INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email, created_at'; const { rows } = await db.query(newUserQuery, [email, passwordHash]); signAndSendToken(rows[0], 201, res); } catch (error) { next(error); } });
-authRouter.post('/login', async (req, res, next) => { /* ... (unchanged) ... */ try { const { email, password } = req.body; if (!email || !password) { return next(new AppError('Please provide email and password.', 400));} const userQuery = await db.query('SELECT * FROM users WHERE email = $1', [email]); const user = userQuery.rows[0]; if (!user || !(await bcrypt.compare(password, user.password_hash))) { return next(new AppError('Invalid credentials.', 401)); } const updateLoginQuery = 'UPDATE users SET last_login_at = NOW() WHERE id = $1 RETURNING *'; const { rows } = await db.query(updateLoginQuery, [user.id]); signAndSendToken(rows[0], 200, res); } catch (error) { next(error); } });
-authRouter.post('/logout', (req, res) => { /* ... (unchanged) ... */ res.cookie('jwt', 'loggedout', { expires: new Date(Date.now() + 10 * 1000), httpOnly: true }); res.status(200).json({ status: 'success', statusCode: 200, message: 'User logged out successfully.' }); });
-authRouter.get('/me', protect, (req, res) => { /* ... (unchanged) ... */ res.status(200).json({ status: 'success', statusCode: 200, message: 'User profile retrieved successfully.', data: { user: req.user } }); });
+authRouter.post('/register', async (req, res, next) => { try { const { email, password } = req.body; if (!email || !password || password.length < 8) { return next(new AppError('Please provide a valid email and a password of at least 8 characters.', 400)); } const userCheck = await db.query('SELECT * FROM users WHERE email = $1', [email]); if (userCheck.rows.length > 0) { return next(new AppError('A user with this email already exists.', 409));} const salt = await bcrypt.genSalt(10); const passwordHash = await bcrypt.hash(password, salt); const newUserQuery = 'INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email, created_at'; const { rows } = await db.query(newUserQuery, [email, passwordHash]); signAndSendToken(rows[0], 201, res); } catch (error) { next(error); } });
+authRouter.post('/login', async (req, res, next) => { try { const { email, password } = req.body; if (!email || !password) { return next(new AppError('Please provide email and password.', 400));} const userQuery = await db.query('SELECT * FROM users WHERE email = $1', [email]); const user = userQuery.rows[0]; if (!user || !(await bcrypt.compare(password, user.password_hash))) { return next(new AppError('Invalid credentials.', 401)); } const updateLoginQuery = 'UPDATE users SET last_login_at = NOW() WHERE id = $1 RETURNING *'; const { rows } = await db.query(updateLoginQuery, [user.id]); signAndSendToken(rows[0], 200, res); } catch (error) { next(error); } });
+authRouter.post('/logout', (req, res) => { res.cookie('jwt', 'loggedout', { expires: new Date(Date.now() + 10 * 1000), httpOnly: true }); res.status(200).json({ status: 'success', statusCode: 200, message: 'User logged out successfully.' }); });
+authRouter.get('/me', protect, (req, res) => { res.status(200).json({ status: 'success', statusCode: 200, message: 'User profile retrieved successfully.', data: { user: req.user } }); });
 app.use('/api/v1/auth', authRouter);
-
 // --- Monitors CRUD Routes ---
 const monitorRouter = express.Router();
 monitorRouter.use(protect);
-monitorRouter.post('/', async (req, res, next) => {
-    try {
-        const { name, http_method, base_url, endpoint, check_interval_seconds, notification_email } = req.body;
-        const query = `INSERT INTO monitors (user_id, name, http_method, base_url, endpoint, check_interval_seconds, notification_email) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *;`;
-        const { rows } = await db.query(query, [req.user.id, name, http_method, base_url, endpoint, check_interval_seconds, notification_email]);
-        res.status(201).json({ status: 'success', statusCode: 201, message: 'Monitor created successfully.', data: { monitor: rows[0] } });
-    } catch (error) { next(error); }
-});
-monitorRouter.get('/', async (req, res, next) => { /* ... (unchanged) ... */ try { const { rows } = await db.query('SELECT * FROM monitors WHERE user_id = $1 ORDER BY created_at DESC;', [req.user.id]); res.status(200).json({ status: 'success', statusCode: 200, message: 'Monitors retrieved successfully.', results: rows.length, data: { monitors: rows } }); } catch (error) { next(error); } });
-monitorRouter.get('/:id', async (req, res, next) => { /* ... (unchanged) ... */ try { const { rows } = await db.query('SELECT * FROM monitors WHERE id = $1 AND user_id = $2;', [req.params.id, req.user.id]); if (rows.length === 0) { return next(new AppError('Monitor not found.', 404)); } res.status(200).json({ status: 'success', statusCode: 200, message: 'Monitor retrieved successfully.', data: { monitor: rows[0] } }); } catch (error) { next(error); } });
-monitorRouter.put('/:id', async (req, res, next) => {
-    try {
-        const { name, http_method, base_url, endpoint, check_interval_seconds, is_active, notification_email } = req.body;
-        const query = `UPDATE monitors SET name = $1, http_method = $2, base_url = $3, endpoint = $4, check_interval_seconds = $5, is_active = $6, notification_email = $7, updated_at = NOW() WHERE id = $8 AND user_id = $9 RETURNING *;`;
-        const { rows } = await db.query(query, [name, http_method, base_url, endpoint, check_interval_seconds, is_active, notification_email, req.params.id, req.user.id]);
-        if (rows.length === 0) { return next(new AppError('Monitor not found.', 404));}
-        res.status(200).json({ status: 'success', statusCode: 200, message: 'Monitor updated successfully.', data: { monitor: rows[0] } });
-    } catch (error) { next(error); }
-});
-monitorRouter.delete('/:id', async (req, res, next) => { /* ... (unchanged) ... */ try { const result = await db.query('DELETE FROM monitors WHERE id = $1 AND user_id = $2;', [req.params.id, req.user.id]); if (result.rowCount === 0) { return next(new AppError('Monitor not found.', 404));} res.status(204).send(); } catch (error) { next(error); } });
+monitorRouter.post('/', async (req, res, next) => { try { const { name, http_method, base_url, endpoint, check_interval_seconds, notification_email } = req.body; const query = `INSERT INTO monitors (user_id, name, http_method, base_url, endpoint, check_interval_seconds, notification_email) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *;`; const { rows } = await db.query(query, [req.user.id, name, http_method, base_url, endpoint, check_interval_seconds, notification_email]); res.status(201).json({ status: 'success', statusCode: 201, message: 'Monitor created successfully.', data: { monitor: rows[0] } }); } catch (error) { next(error); } });
+monitorRouter.get('/', async (req, res, next) => { try { const { rows } = await db.query('SELECT * FROM monitors WHERE user_id = $1 ORDER BY created_at DESC;', [req.user.id]); res.status(200).json({ status: 'success', statusCode: 200, message: 'Monitors retrieved successfully.', results: rows.length, data: { monitors: rows } }); } catch (error) { next(error); } });
+monitorRouter.get('/:id', async (req, res, next) => { try { const { rows } = await db.query('SELECT * FROM monitors WHERE id = $1 AND user_id = $2;', [req.params.id, req.user.id]); if (rows.length === 0) { return next(new AppError('Monitor not found.', 404)); } res.status(200).json({ status: 'success', statusCode: 200, message: 'Monitor retrieved successfully.', data: { monitor: rows[0] } }); } catch (error) { next(error); } });
+monitorRouter.put('/:id', async (req, res, next) => { try { const { name, http_method, base_url, endpoint, check_interval_seconds, is_active, notification_email } = req.body; const query = `UPDATE monitors SET name = $1, http_method = $2, base_url = $3, endpoint = $4, check_interval_seconds = $5, is_active = $6, notification_email = $7, updated_at = NOW() WHERE id = $8 AND user_id = $9 RETURNING *;`; const { rows } = await db.query(query, [name, http_method, base_url, endpoint, check_interval_seconds, is_active, notification_email, req.params.id, req.user.id]); if (rows.length === 0) { return next(new AppError('Monitor not found.', 404));} res.status(200).json({ status: 'success', statusCode: 200, message: 'Monitor updated successfully.', data: { monitor: rows[0] } }); } catch (error) { next(error); } });
+monitorRouter.delete('/:id', async (req, res, next) => { try { const result = await db.query('DELETE FROM monitors WHERE id = $1 AND user_id = $2;', [req.params.id, req.user.id]); if (result.rowCount === 0) { return next(new AppError('Monitor not found.', 404));} res.status(204).send(); } catch (error) { next(error); } });
 app.use('/api/v1/monitors', monitorRouter);
-
 // --- NEW: Analytics Routes ---
 const analyticsRouter = express.Router();
 analyticsRouter.use(protect);
-
-analyticsRouter.get('/:monitorId/summary', async (req, res, next) => {
-    try {
-        const { monitorId } = req.params; const period = req.query.period || '24h';
-        const intervalMap = { '24h': '1 day', '7d': '7 days', '30d': '30 days' };
-        if (!intervalMap[period]) { return next(new AppError('Invalid period specified.', 400)); }
-
-        const query = `
-            SELECT 
-                COUNT(*) AS total_checks,
-                AVG(response_time_ms) AS avg_response_time,
-                (COUNT(CASE WHEN was_successful THEN 1 END) * 100.0 / COUNT(*)) AS uptime_percentage
-            FROM health_checks
-            WHERE monitor_id = $1 AND timestamp >= NOW() - $2::interval;
-        `;
-        const { rows } = await db.query(query, [monitorId, intervalMap[period]]);
-        res.status(200).json({ status: 'success', statusCode: 200, message: `Summary for the last ${period} retrieved.`, data: rows[0] });
-    } catch (error) { next(error); }
-});
-
-analyticsRouter.get('/:monitorId/history', async (req, res, next) => {
-    try {
-        const { monitorId } = req.params;
-        const query = `
-            WITH days AS (
-                SELECT generate_series(
-                    (NOW() - interval '89 days')::date,
-                    NOW()::date,
-                    '1 day'::interval
-                )::date AS day
-            )
-            SELECT
-                d.day,
-                COALESCE(s.status, 'no_data') AS status
-            FROM days d
-            LEFT JOIN (
-                SELECT
-                    date_trunc('day', timestamp)::date AS day,
-                    CASE WHEN COUNT(*) FILTER (WHERE was_successful = false) > 0 THEN 'downtime' ELSE 'all_up' END AS status
-                FROM health_checks
-                WHERE monitor_id = $1 AND timestamp >= NOW() - interval '90 days'
-                GROUP BY 1
-            ) s ON d.day = s.day
-            ORDER BY d.day ASC;
-        `;
-        const { rows } = await db.query(query, [monitorId]);
-        res.status(200).json({ status: 'success', statusCode: 200, message: '90-day history retrieved.', data: rows });
-    } catch (error) { next(error); }
-});
-
+analyticsRouter.get('/:monitorId/summary', async (req, res, next) => { try { const { monitorId } = req.params; const period = req.query.period || '24h'; const intervalMap = { '24h': '1 day', '7d': '7 days', '30d': '30 days' }; if (!intervalMap[period]) { return next(new AppError('Invalid period specified.', 400)); } const query = ` SELECT COUNT(*) AS total_checks, AVG(response_time_ms) AS avg_response_time, (COUNT(CASE WHEN was_successful THEN 1 END) * 100.0 / COUNT(*)) AS uptime_percentage FROM health_checks WHERE monitor_id = $1 AND timestamp >= NOW() - $2::interval; `; const { rows } = await db.query(query, [monitorId, intervalMap[period]]); res.status(200).json({ status: 'success', statusCode: 200, message: `Summary for the last ${period} retrieved.`, data: rows[0] }); } catch (error) { next(error); } });
+analyticsRouter.get('/:monitorId/history', async (req, res, next) => { try { const { monitorId } = req.params; const query = ` WITH days AS ( SELECT generate_series( (NOW() - interval '89 days')::date, NOW()::date, '1 day'::interval )::date AS day ) SELECT d.day, COALESCE(s.status, 'no_data') AS status FROM days d LEFT JOIN ( SELECT date_trunc('day', timestamp)::date AS day, CASE WHEN COUNT(*) FILTER (WHERE was_successful = false) > 0 THEN 'downtime' ELSE 'all_up' END AS status FROM health_checks WHERE monitor_id = $1 AND timestamp >= NOW() - interval '90 days' GROUP BY 1 ) s ON d.day = s.day ORDER BY d.day ASC; `; const { rows } = await db.query(query, [monitorId]); res.status(200).json({ status: 'success', statusCode: 200, message: '90-day history retrieved.', data: rows }); } catch (error) { next(error); } });
 app.use('/api/v1/analytics', analyticsRouter);
-
 // =================================================================
 // 7. ERROR HANDLING & SERVER START
 // =================================================================
-app.use((req, res, next) => { /* ... (unchanged) ... */ next(new AppError(`Can't find ${req.originalUrl} on this server!`, 404)); });
-app.use((err, req, res, next) => { /* ... (unchanged) ... */ err.statusCode = err.statusCode || 500; err.status = err.status || 'error'; console.error('💥 ERROR:', err); res.status(err.statusCode).json({ status: err.status, message: err.message }); });
+app.use((req, res, next) => { next(new AppError(`Can't find ${req.originalUrl} on this server!`, 404)); });
+app.use((err, req, res, next) => { err.statusCode = err.statusCode || 500; err.status = err.status || 'error'; console.error('💥 ERROR:', err); res.status(err.statusCode).json({ status: err.status, message: err.message }); });
 const startServer = async () => {
   await ensureSchema();
   const PORT = process.env.PORT || 8000;
