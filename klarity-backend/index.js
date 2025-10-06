@@ -703,8 +703,78 @@ const ensureSchema = async () => { /* ... (code unchanged) ... */ console.log('E
 // 3. UTILITIES (Email & Errors)
 // =================================================================
 // ... (Email Templates and AppError are unchanged)
-const generateDowntimeEmail = (monitor, checkResult) => { const errorReason = checkResult.errorMessage ? `Error: ${checkResult.errorMessage}` : `Received status code: ${checkResult.statusCode}`; return `<div style="font-family: sans-serif; padding: 20px; color: #333;"><h1 style="color: #e74c3c;">🔴 Whoops! Your API might be taking a nap.</h1><p>Heads up! We detected a problem with your monitor:</p><h2 style="font-size: 24px;">${monitor.name}</h2><div style="background-color: #f9f9f9; border-left: 4px solid #e74c3c; padding: 15px; margin: 20px 0;"><p><strong>URL Checked:</strong> ${monitor.base_url}${monitor.endpoint}</p><p><strong>Time of Failure:</strong> ${new Date().toUTCString()}</p><p><strong>Reason:</strong> ${errorReason}</p></div><p>This alert was triggered after 3 consecutive failed checks. We'll let you know as soon as it's back online.</p><p>In the meantime, you might want to check your server logs!</p><a href="https://your-frontend-domain.com/dashboard" style="display: inline-block; padding: 12px 20px; background-color: #3498db; color: #fff; text-decoration: none; border-radius: 5px; margin-top: 10px;">Go to Dashboard</a></div>`; };
-const generateRecoveryEmail = (monitor) => { return `<div style="font-family: sans-serif; padding: 20px; color: #333;"><h1 style="color: #2ecc71;">✅ We're back! Your API is up and running.</h1><p>Good news! Your monitor is back online and responding correctly:</p><h2 style="font-size: 24px;">${monitor.name}</h2><div style="background-color: #f9f9f9; border-left: 4px solid #2ecc71; padding: 15px; margin: 20px 0;"><p><strong>URL Checked:</strong> ${monitor.base_url}${monitor.endpoint}</p><p><strong>Time of Recovery:</strong> ${new Date().toUTCString()}</p></div><p>You can breathe easy now. We'll keep an eye on things for you.</p><a href="https://your-frontend-domain.com/dashboard" style="display: inline-block; padding: 12px 20px; background-color: #3498db; color: #fff; text-decoration: none; border-radius: 5px; margin-top: 10px;">View Performance</a></div>`; };
+// =================================================================
+// 3. UTILITIES (Email & Errors)
+// =================================================================
+
+// --- UPGRADED, Genz-Style Email Templates ---
+const generateDowntimeEmail = (monitor, checkResult) => {
+    const errorReason = checkResult.errorMessage ? `Error: ${checkResult.errorMessage}` : `Received status code: ${checkResult.statusCode}`;
+    const formattedDate = new Date().toLocaleString('en-US', { timeZone: 'IST', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+    return `
+    <div style="font-family: 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f3f4f6; padding: 40px 20px;">
+        <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1);">
+            <div style="padding: 24px; text-align: center;">
+                <img src="https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExbm9oMDh2OWR0eXQ3czh0ZWZna3VrcHdsZXR0NWx6MDY0ODZma245MyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9cw/M2R2VPeiC2s1i/giphy.gif" alt="Sad computer animation" style="width: 80px; height: 80px; margin-bottom: 16px;">
+                <h1 style="font-size: 28px; font-weight: 700; color: #ef4444; margin: 0;">Yikes. Your API might be on a break.</h1>
+                <p style="color: #6b7280; margin-top: 8px;">Heads up! We noticed something's up with your monitor.</p>
+            </div>
+            <div style="padding: 0 24px;">
+                <div style="background-color: #fee2e2; border: 1px solid #fecaca; border-radius: 8px; padding: 20px;">
+                    <h2 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0 0 16px;">${monitor.name}</h2>
+                    <p style="margin: 4px 0; color: #374151;"><strong>URL:</strong> ${monitor.base_url}${monitor.endpoint}</p>
+                    <p style="margin: 4px 0; color: #374151;"><strong>Failure Time (IST):</strong> ${formattedDate}</p>
+                    <p style="margin: 4px 0; font-weight: 600; color: #b91c1c;"><strong>Reason:</strong> ${errorReason}</p>
+                </div>
+            </div>
+            <div style="padding: 24px; text-align: center;">
+                <p style="color: #6b7280;">This alert was triggered after 3 failed checks. Time to check those server logs!</p>
+                <a href="https://your-frontend-domain.com/dashboard/${monitor.id}" style="display: inline-block; margin-top: 12px; padding: 12px 24px; background-color: #3b82f6; color: #ffffff; text-decoration: none; font-weight: 600; border-radius: 8px;">
+                    View Dashboard
+                </a>
+            </div>
+            <div style="background-color: #f9fafb; padding: 16px; text-align: center; font-size: 12px; color: #9ca3af;">
+                Klarity | API Health Monitoring
+            </div>
+        </div>
+    </div>
+    `;
+};
+
+const generateRecoveryEmail = (monitor) => {
+    const formattedDate = new Date().toLocaleString('en-US', { timeZone: 'IST', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    
+    return `
+    <div style="font-family: 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f3f4f6; padding: 40px 20px;">
+        <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1);">
+            <div style="padding: 24px; text-align: center;">
+                <img src="https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExZ2Y2MXgyNGN2NzhwdW11aTNuZGV5a20yNHZlMGJrc2Q5MDhrb2V6MyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9cw/8MBa8gVwH0bwQ/giphy.gif" alt="Happy computer animation" style="width: 80px; height: 80px; margin-bottom: 16px;">
+                <h1 style="font-size: 28px; font-weight: 700; color: #22c55e; margin: 0;">And we're back! ✨</h1>
+                <p style="color: #6b7280; margin-top: 8px;">Good news! Your monitor is back online and everything looks A-OK.</p>
+            </div>
+            <div style="padding: 0 24px;">
+                <div style="background-color: #dcfce7; border: 1px solid #bbf7d0; border-radius: 8px; padding: 20px;">
+                    <h2 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0 0 16px;">${monitor.name}</h2>
+                    <p style="margin: 4px 0; color: #374151;"><strong>URL:</strong> ${monitor.base_url}${monitor.endpoint}</p>
+                    <p style="margin: 4px 0; color: #374151;"><strong>Recovery Time (IST):</strong> ${formattedDate}</p>
+                </div>
+            </div>
+            <div style="padding: 24px; text-align: center;">
+                <p style="color: #6b7280;">You can breathe easy now. We'll keep an eye on things for you.</p>
+                <a href="https://your-frontend-domain.com/dashboard/${monitor.id}" style="display: inline-block; margin-top: 12px; padding: 12px 24px; background-color: #3b82f6; color: #ffffff; text-decoration: none; font-weight: 600; border-radius: 8px;">
+                    Check Performance
+                </a>
+            </div>
+            <div style="background-color: #f9fafb; padding: 16px; text-align: center; font-size: 12px; color: #9ca3af;">
+                Klarity | API Health Monitoring
+            </div>
+        </div>
+    </div>
+    `;
+};
+
+// ... (The rest of your file, including the old AppError class, is unchanged)
 const sendEmail = async (options) => { try { const { data, error } = await resend.emails.send({ from: process.env.EMAIL_FROM, to: options.to, subject: options.subject, html: options.html }); if (error) { return console.error({ error }); } console.log(`Email sent successfully to ${options.to}. ID: ${data.id}`); } catch (error) { console.error('Exception when sending email:', error); } };
 class AppError extends Error { constructor(message, statusCode) { super(message); this.statusCode = statusCode; this.status = `${statusCode}`.startsWith('4') ? 'fail' : 'error'; this.isOperational = true; Error.captureStackTrace(this, this.constructor); } }
 
