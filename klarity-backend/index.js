@@ -424,16 +424,17 @@ const protect = async (req, res, next) => { try { let token; if (req.cookies.jwt
 app.get('/api/v1/health', (req, res) => res.status(200).json({ status: 'ok', statusCode: 200, message: 'API is healthy and running.' }));
 
 // --- UPGRADED --- Secure Endpoint for Vercel Cron Job (Fire and Forget)
-app.get('/api/v1/scheduler/run-checks', (req, res) => {
+// --- UPGRADED --- Secure Endpoint for Vercel Cron Job (Must complete within timeout)
+app.get('/api/v1/scheduler/run-checks', async (req, res) => { // Add 'async'
     if (req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
         return res.status(401).json({ status: 'error', message: 'Unauthorized' });
     }
     
-    // Don't wait for the checks to finish. Respond immediately.
-    runHealthChecks(); 
-    
-    // Respond with 202 Accepted to let the cron service know we've received the request.
-    res.status(202).json({ status: 'accepted', statusCode: 202, message: 'Health check process has been triggered.' });
+    // Await the health checks to ensure they complete before the function times out
+    await runHealthChecks();
+
+    // Respond with 200 OK after the work is done
+    res.status(200).json({ status: 'success', statusCode: 200, message: 'Health checks executed successfully.' });
 });
 
 // --- Authentication, Monitors, and Analytics Routes are unchanged ---
