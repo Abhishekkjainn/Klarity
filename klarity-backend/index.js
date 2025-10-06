@@ -866,6 +866,41 @@ const protect = async (req, res, next) => { /* ... (code unchanged) ... */ try {
 // 6. API ROUTES
 // =================================================================
 app.get('/api/v1/health', (req, res) => res.status(200).json({ status: 'ok', statusCode: 200, message: 'API is healthy and running.' }));
+
+// --- Root Route ---
+app.get('/', (req, res) => {
+    const html = `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Klarity API</title>
+            <style>
+                body {
+                    background-color: #111827;
+                    color: #e5e7eb;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                    margin: 0;
+                    font-family: 'Inter', sans-serif;
+                }
+                h1 {
+                    font-size: 4rem;
+                    font-weight: 800;
+                    letter-spacing: -0.05em;
+                }
+            </style>
+        </head>
+        <body>
+            <h1>Klarity API</h1>
+        </body>
+        </html>
+    `;
+    res.send(html);
+});
 app.get('/api/v1/scheduler/run-checks', async (req, res) => {
     if (req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) { return res.status(401).json({ status: 'error', message: 'Unauthorized' }); }
     await runHealthChecks(); 
@@ -892,6 +927,7 @@ analyticsRouter.use(protect);
 analyticsRouter.get('/:monitorId/summary', async (req, res, next) => { try { const { monitorId } = req.params; const period = req.query.period || '24h'; const intervalMap = { '24h': '1 day', '7d': '7 days', '30d': '30 days' }; if (!intervalMap[period]) { return next(new AppError('Invalid period specified.', 400)); } const query = ` SELECT COUNT(*) AS total_checks, AVG(response_time_ms) AS avg_response_time, (COUNT(CASE WHEN was_successful THEN 1 END) * 100.0 / COUNT(*)) AS uptime_percentage FROM health_checks WHERE monitor_id = $1 AND timestamp >= NOW() - $2::interval; `; const { rows } = await db.query(query, [monitorId, intervalMap[period]]); res.status(200).json({ status: 'success', statusCode: 200, message: `Summary for the last ${period} retrieved.`, data: rows[0] }); } catch (error) { next(error); } });
 analyticsRouter.get('/:monitorId/history', async (req, res, next) => { try { const { monitorId } = req.params; const query = ` WITH days AS ( SELECT generate_series( (NOW() - interval '89 days')::date, NOW()::date, '1 day'::interval )::date AS day ) SELECT d.day, COALESCE(s.status, 'no_data') AS status FROM days d LEFT JOIN ( SELECT date_trunc('day', timestamp)::date AS day, CASE WHEN COUNT(*) FILTER (WHERE was_successful = false) > 0 THEN 'downtime' ELSE 'all_up' END AS status FROM health_checks WHERE monitor_id = $1 AND timestamp >= NOW() - interval '90 days' GROUP BY 1 ) s ON d.day = s.day ORDER BY d.day ASC; `; const { rows } = await db.query(query, [monitorId]); res.status(200).json({ status: 'success', statusCode: 200, message: '90-day history retrieved.', data: rows }); } catch (error) { next(error); } });
 app.use('/api/v1/analytics', analyticsRouter);
+
 
 // =================================================================
 // 7. ERROR HANDLING & SERVER START
