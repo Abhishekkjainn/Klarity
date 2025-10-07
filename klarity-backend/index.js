@@ -117,8 +117,9 @@ const runHealthChecks = async () => {
                 await client.query('UPDATE monitors SET current_status = $1, last_checked_at = NOW(), consecutive_failures = $2 WHERE id = $3', [newStatus, newConsecutiveFailures, monitor.id]);
             }
         } else { console.log('No monitors due for a check.'); }
+         await client.query(`UPDATE locks SET locked_at = '1970-01-01' WHERE lock_name = 'runHealthChecks'`);
         await client.query('COMMIT');
-        console.log('Health checks completed.');
+        console.log('Health checks completed and lock released.');
     } catch (error) {
         await client.query('ROLLBACK');
         console.error('💥 Error during health check transaction:', error);
