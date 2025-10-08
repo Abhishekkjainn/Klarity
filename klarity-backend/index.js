@@ -150,7 +150,20 @@ const runHealthChecks = async () => {
 // =================================================================
 // 5. MIDDLEWARE, ROUTES, and SERVER START
 // =================================================================
-app.use(cors({ origin: ['https://klarityy.vercel.app', process.env.FRONTEND_URL].filter(Boolean), credentials: true }));
+// in the MIDDLEWARE section
+
+const allowedOrigins = [
+    'https://klarityy.vercel.app',
+    process.env.FRONTEND_URL
+].filter(Boolean);
+
+// --- ADD THIS LINE FOR DEBUGGING ---
+console.log('Server configured with Allowed CORS Origins:', allowedOrigins);
+
+app.use(cors({
+    origin: allowedOrigins,
+    credentials: true,
+}));
 app.use(express.json({ limit: '10kb' })); // Add payload size limit
 app.use(cookieParser());
 const protect = async (req, res, next) => { /* ... (code unchanged) ... */ try { let token; if (req.cookies.jwt) { token = req.cookies.jwt; } if (!token) { return next(new AppError('You are not logged in.', 401)); } const decoded = jwt.verify(token, process.env.JWT_SECRET); const { rows } = await db.query('SELECT id, email, created_at FROM users WHERE id = $1', [decoded.user.id]); const currentUser = rows[0]; if (!currentUser) { return next(new AppError('The user for this token no longer exists.', 401)); } req.user = currentUser; next(); } catch (error) { next(new AppError('Invalid token or session expired.', 401)); } };
